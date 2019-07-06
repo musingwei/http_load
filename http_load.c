@@ -106,7 +106,11 @@ static int num_sips, max_sips;
 
 typedef struct {
     int url_num;
+#ifdef USE_IPV6
+    struct sockaddr_in6 sa_in;
+#else  /* USE_IPV6 */
     struct sockaddr_in sa_in;
+#endif
     int sa_len;
     int conn_fd;
 #ifdef USE_SSL
@@ -538,7 +542,7 @@ read_url_file( char* url_file )
     char* https = "https://";
     int https_len = strlen( https );
 #endif
-    int proto_len, host_len;
+    int proto_len, host_len = 0;
     char* cp;
 
     fp = fopen( url_file, "r" );
@@ -585,13 +589,27 @@ read_url_file( char* url_file )
 	    (void) fprintf( stderr, "%s: unknown protocol - %s\n", argv0, line );
 	    exit( 1 );
 	    }
-	for ( cp = line + proto_len;
-	     *cp != '\0' && *cp != ':' && *cp != '/'; ++cp )
-	    ;
-	host_len = cp - line;
-	host_len -= proto_len;
-	strncpy( hostname, line + proto_len, host_len );
-	hostname[host_len] = '\0';
+
+	/* IPv6 address string */
+	if ( *(line + proto_len) == '[' )
+	    {
+	    for ( cp = line + proto_len;
+	        *cp != '\0' && *cp != ']' && *cp != '/'; ++cp )
+	        host_len++;
+	    strncpy( hostname, line + proto_len + 1, host_len - 1 );
+	    hostname[host_len] = '\0';
+
+	    if (*cp == ']') cp++;
+	    }
+	else
+	    {
+	    for ( cp = line + proto_len;
+	        *cp != '\0' && *cp != ':' && *cp != '/'; ++cp )
+	        host_len++;
+	    strncpy( hostname, line + proto_len, host_len );
+	    hostname[host_len] = '\0';
+	    }
+
 	urls[num_urls].hostname = strdup_check( hostname );
 	if ( *cp == ':' )
 	    {
@@ -917,6 +935,7 @@ handle_connect( int cnum, struct timeval* nowP, int double_check )
     int url_num;
     char buf[600];
     int bytes, r;
+    unsigned char tmpaddr[sizeof(struct in6_addr)];
 
     url_num = connections[cnum].url_num;
     if ( double_check )
@@ -1009,14 +1028,27 @@ handle_connect( int cnum, struct timeval* nowP, int double_check )
     if ( do_proxy )
 	{
 #ifdef USE_SSL
+	if (inet_pton(AF_INET6, urls[url_num].hostname, tmpaddr) == 1)
 	bytes = snprintf(
-	    buf, sizeof(buf), "GET %s://%.500s:%d%.500s HTTP/1.0\r\n",
+	    buf, sizeof(buf), "GET %s://[%.500s]:%d/%.500s HTTP/1.0\r\n",
+	    urls[url_num].protocol == PROTO_HTTPS ? "https" : "http",
+	    urls[url_num].hostname, (int) urls[url_num].port,
+	    urls[url_num].filename );
+	else
+	bytes = snprintf(
+	    buf, sizeof(buf), "GET %s://%.500s:%d/%.500s HTTP/1.0\r\n",
 	    urls[url_num].protocol == PROTO_HTTPS ? "https" : "http",
 	    urls[url_num].hostname, (int) urls[url_num].port,
 	    urls[url_num].filename );
 #else
+	if (inet_pton(AF_INET6, urls[url_num].hostname, tmpaddr) == 1)
 	bytes = snprintf(
-	    buf, sizeof(buf), "GET http://%.500s:%d%.500s HTTP/1.0\r\n",
+	    buf, sizeof(buf), "GET http://[%.500s]:%d/%.500s HTTP/1.0\r\n",
+	    urls[url_num].hostname, (int) urls[url_num].port,
+	    urls[url_num].filename );
+	else
+	bytes = snprintf(
+	    buf, sizeof(buf), "GET http://%.500s:%d/%.500s HTTP/1.0\r\n",
 	    urls[url_num].hostname, (int) urls[url_num].port,
 	    urls[url_num].filename );
 #endif
@@ -1025,6 +1057,11 @@ handle_connect( int cnum, struct timeval* nowP, int double_check )
 	bytes = snprintf(
 	    buf, sizeof(buf), "GET %.500s HTTP/1.0\r\n",
 	    urls[url_num].filename );
+    if (inet_pton(AF_INET6, urls[url_num].hostname, tmpaddr) == 1)
+    bytes += snprintf(
+	&buf[bytes], sizeof(buf) - bytes, "Host: [%s]\r\n",
+	urls[url_num].hostname );
+    else
     bytes += snprintf(
 	&buf[bytes], sizeof(buf) - bytes, "Host: %s\r\n",
 	urls[url_num].hostname );
